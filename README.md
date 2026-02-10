@@ -1,11 +1,13 @@
 # Focus and Highlight
-A plugin for [obsidian](https://obsidian.md/) to focus on a specific paragraph in [Reading mode](https://help.obsidian.md/How+to/Read+and+edit+modes).
+A plugin for [obsidian](https://obsidian.md/) to focus on a specific paragraph in both [Reading mode and Edit mode](https://help.obsidian.md/How+to/Read+and+edit+modes).
 
 ## Features
+- **Works in both Reading (Preview) mode and Edit (Source) mode!**
 - Focus on a specific heading and its children when clicking on them.
     - Start from v1.2.0. You can also focus on a specific paragraph by changing the setting `Content Behavior` to `Only Focus the Element`.
     - Start from v1.2.0. You can focus by clicking the children of a heading.
 	- If you don't want to change your focus state when selecting the text, you can make the value of `Focus Sensitivity` smaller.
+- **New in v1.4.0**: Full support for Edit mode with smooth transitions and intelligent heading detection.
 
 ![](demo.gif)
 
@@ -68,11 +70,24 @@ The plugin now supports multi-pane scenarios. Different panes will be able to fo
 
 ![](multi_pane.gif)
 
+### Edit Mode Support (v1.4.0+)
+
+The plugin now fully supports Edit (Source) mode! When you click on a line in edit mode:
+- Clicking on a heading will focus the heading and its content (based on your Focus Scope settings)
+- Clicking on regular text will focus the current paragraph or its parent heading's content
+- The dimming effect uses the same opacity and animation speed settings as Preview mode
+- Focus state is automatically cleared when switching between Edit and Preview modes
+
+### Technical Details
+
+Edit mode support is implemented using CodeMirror 6 extensions:
+- **State fields** track the current focus state
+- **Decorations** apply visual dimming to unfocused lines
+- **Metadata cache** determines heading hierarchy and content boundaries
+
 ### Issues
 If you encounter any problems or have suggestions about the plugin, please feel free to open issues.
 
-### TODO
-- [ ] Add support in edit mode.
 ### Support
 > [!NOTE] Maintaining a plugin is not an easy task.
 > If you like this plugin, please consider the following methods to support the author:

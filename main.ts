@@ -1,7 +1,14 @@
 import { App, MarkdownView, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { EditorView } from '@codemirror/view';
+import { Extension } from '@codemirror/state';
 import { FocusManager } from 'utils/focusManager';
-import { getFocusInfo, isHeaderFocusInfo, isIntermediateFocusInfo, isListFocusInfo, toIntermediateFocusInfo } from 'utils/info';
+import { getFocusInfo, isIntermediateFocusInfo, isListFocusInfo, toIntermediateFocusInfo } from 'utils/info';
 import { FocusPluginLogger } from 'utils/log';
+import { 
+	EditModeFocusManager, 
+	focusStateField, 
+	focusDecorationsField
+} from 'utils/editModeFocusManager';
 interface FocusPluginSettings {
 	clearMethod: 'click-again' | 'click-outside';
 	contentBehavior: 'element' | 'content' | 'none';
@@ -30,12 +37,14 @@ interface PaneState {
 export default class FocusPlugin extends Plugin {
 	settings: FocusPluginSettings;
 	focusManager: FocusManager = new FocusManager();
-	lastClick: number = 0;
+	editModeFocusManager: EditModeFocusManager = new EditModeFocusManager();
+	lastClick = 0;
 	indicator: HTMLElement | null = null;
 	indicatorEl: HTMLElement = document.createElement("div");
+	private editorExtensions: Extension[] = [];
 
 	private getPaneState(): PaneState | null {
-		let view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view)
 			return null;
 
@@ -45,15 +54,33 @@ export default class FocusPlugin extends Plugin {
 		}
 	}
 
+	private getEditorView(): EditorView | null {
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!view) return null;
+		
+		// @ts-ignore - accessing internal CM6 editor
+		const editor = view.editor?.cm as EditorView;
+		return editor || null;
+	}
+
 	async onload() {
 
 		await this.loadSettings();
+
+		// Register CodeMirror 6 extensions for edit mode
+		this.editorExtensions = [focusStateField, focusDecorationsField];
+		this.registerEditorExtension(this.editorExtensions);
 
 		this.addCommand({
 			id: 'clear-focus',
 			name: 'Clear Focus',
 			callback: () => {
 				this.focusManager.clearAll();
+				// Also clear edit mode focus
+				const editorView = this.getEditorView();
+				if (editorView) {
+					this.editModeFocusManager.clearFocus(editorView);
+				}
 			}
 		});
 
@@ -68,21 +95,40 @@ export default class FocusPlugin extends Plugin {
 		this.addSettingTab(new FocusPluginSettingTab(this.app, this));
 
 		this.registerEvent(this.app.workspace.on('layout-change', () => {
+			const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!view) return;
 
-			let paneState = this.getPaneState();
-			if (!paneState || paneState.mode !== 'preview')
-				return;
-
-			this.focusManager.clear(paneState.head);
+			const mode = view.getMode();
+			
+			if (mode === 'preview') {
+				const paneState = this.getPaneState();
+				if (paneState) {
+					this.focusManager.clear(paneState.head);
+				}
+				// Clear edit mode focus when switching to preview
+				const editorView = this.getEditorView();
+				if (editorView) {
+					this.editModeFocusManager.clearFocus(editorView);
+				}
+			} else if (mode === 'source') {
+				// Clear preview mode focus when switching to edit
+				this.focusManager.clearAll();
+			}
 		}));
 
 		this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
+			const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!view) return;
 
-			let paneState = this.getPaneState();
-			if (!paneState || paneState.mode !== 'preview')
-				return;
-
-			this.focusManager.changePane(paneState.head);
+			const mode = view.getMode();
+			
+			if (mode === 'preview') {
+				const paneState = this.getPaneState();
+				if (paneState) {
+					this.focusManager.changePane(paneState.head);
+				}
+			}
+			// For edit mode, focus is handled by CM6 state
 		}));
 
 		this.registerDomEvent(document, 'pointerdown', (evt: PointerEvent) => {
@@ -99,67 +145,144 @@ export default class FocusPlugin extends Plugin {
 			if (!(evt.target instanceof Element))
 				return;
 
-			let paneState = this.getPaneState();
-			if (!paneState || paneState.mode !== 'preview')
+			const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!view)
 				return;
 
-			let focusInfo = getFocusInfo(evt.target)
+			const mode = view.getMode();
 
-			// fallback to intermediate focus if list is disabled
-			if (!this.settings.enableList && isListFocusInfo(focusInfo))
-				focusInfo = toIntermediateFocusInfo(focusInfo);
+			// Handle preview mode (existing logic)
+			if (mode === 'preview') {
+				const paneState = this.getPaneState();
+				if (!paneState)
+					return;
 
-			if (isIntermediateFocusInfo(focusInfo) && this.settings.contentBehavior === 'none')
-				return;
-			
-			let currentFocus = this.focusManager.getFocus(paneState.head);
-			if (currentFocus !== undefined) {
-				switch (this.settings.clearMethod) {
-					case 'click-again':
-						if (focusInfo && this.focusManager.isSameFocus(paneState.head, focusInfo)) {
-							this.focusManager.clear(paneState.head);
-							return;
-						}
-						break;
-					case 'click-outside':
-						if (evt.target.classList.contains('markdown-preview-view')) {
-							this.focusManager.clear(paneState.head);
-							return;
-						}
-						break;
-				}
-			}
+				let focusInfo = getFocusInfo(evt.target)
 
-			if (isIntermediateFocusInfo(focusInfo)) {
-				let activeFile = this.app.workspace.getActiveFile();
-				let metadata = activeFile !== null ? this.app.metadataCache.getFileCache(activeFile) : null;
-				if (metadata) {
-					switch (this.settings.contentBehavior) {
-						case 'content':
-							focusInfo.metadata = metadata;
-						case 'element':
-							this.focusManager.focus(paneState.head, focusInfo);
+				// fallback to intermediate focus if list is disabled
+				if (!this.settings.enableList && isListFocusInfo(focusInfo))
+					focusInfo = toIntermediateFocusInfo(focusInfo);
+
+				if (isIntermediateFocusInfo(focusInfo) && this.settings.contentBehavior === 'none')
+					return;
+				
+				const currentFocus = this.focusManager.getFocus(paneState.head);
+				if (currentFocus !== undefined) {
+					switch (this.settings.clearMethod) {
+						case 'click-again':
+							if (focusInfo && this.focusManager.isSameFocus(paneState.head, focusInfo)) {
+								this.focusManager.clear(paneState.head);
+								return;
+							}
 							break;
-						default:
+						case 'click-outside':
+							if (evt.target.classList.contains('markdown-preview-view')) {
+								this.focusManager.clear(paneState.head);
+								return;
+							}
 							break;
 					}
 				}
-				else {
-					FocusPluginLogger.log('Error', 'No metadata found for active file');
+
+				if (isIntermediateFocusInfo(focusInfo)) {
+					const activeFile = this.app.workspace.getActiveFile();
+					const metadata = activeFile !== null ? this.app.metadataCache.getFileCache(activeFile) : null;
+					if (metadata) {
+						switch (this.settings.contentBehavior) {
+							case 'content':
+								focusInfo.metadata = metadata;
+								// fall through
+							case 'element':
+								this.focusManager.focus(paneState.head, focusInfo);
+								break;
+							default:
+								break;
+						}
+					}
+					else {
+						FocusPluginLogger.log('Error', 'No metadata found for active file');
+					}
 				}
+				else if (focusInfo != null)
+					this.focusManager.focus(paneState.head, focusInfo);
 			}
-			else if (focusInfo != null)
-				this.focusManager.focus(paneState.head, focusInfo);
+			// Handle edit/source mode (new logic)
+			else if (mode === 'source') {
+				this.handleEditModeClick(evt, view);
+			}
 		});
+	}
+
+	private handleEditModeClick(evt: MouseEvent, view: MarkdownView) {
+		const editorView = this.getEditorView();
+		if (!editorView) return;
+
+		// Get active file metadata
+		const activeFile = this.app.workspace.getActiveFile();
+		const metadata = activeFile ? this.app.metadataCache.getFileCache(activeFile) : null;
+		this.editModeFocusManager.setMetadata(metadata);
+
+		// Get clicked position in the editor
+		const pos = editorView.posAtCoords({ x: evt.clientX, y: evt.clientY });
+		if (!pos) return;
+
+		// Convert position to line number
+		const line = editorView.state.doc.lineAt(pos);
+		const lineNumber = line.number;
+
+		// Check if clicking on same line again (to clear focus)
+		const currentFocus = editorView.state.field(focusStateField, false);
+		if (currentFocus && this.settings.clearMethod === 'click-again') {
+			if (lineNumber >= currentFocus.fromLine && lineNumber <= currentFocus.toLine) {
+				this.editModeFocusManager.clearFocus(editorView);
+				return;
+			}
+		}
+
+		// Check if clicking outside focused area (to clear focus)
+		if (currentFocus && this.settings.clearMethod === 'click-outside') {
+			// Check if clicked on gutter or outside content
+			if (evt.target instanceof Element && 
+				(evt.target.classList.contains('cm-gutters') || 
+				evt.target.classList.contains('cm-editor'))) {
+				this.editModeFocusManager.clearFocus(editorView);
+				return;
+			}
+		}
+
+		// Get focus info for clicked line
+		const focusInfo = this.editModeFocusManager.getFocusInfoForLine(
+			lineNumber, 
+			editorView.state.doc
+		);
+
+		if (focusInfo) {
+			this.editModeFocusManager.applyFocus(editorView, focusInfo);
+		}
 	}
 
 	onunload() {
 		this.focusManager.destroy();
+		
+		// Clear edit mode focus
+		const editorView = this.getEditorView();
+		if (editorView) {
+			this.editModeFocusManager.clearFocus(editorView);
+		}
 	}
 
 	private async settingsPreprocessor(settings: FocusPluginSettings) {
 		this.focusManager.clearAll();
 		this.focusManager.includeBody = settings.focusScope === 'content';
+		
+		// Update edit mode manager settings
+		this.editModeFocusManager.setIncludeBody(settings.focusScope === 'content');
+		
+		// Clear edit mode focus
+		const editorView = this.getEditorView();
+		if (editorView) {
+			this.editModeFocusManager.clearFocus(editorView);
+		}
 
 		if (settings.indicator && !this.indicator) {
 			this.indicator = this.addStatusBarItem();
@@ -279,16 +402,16 @@ class FocusPluginSettingTab extends PluginSettingTab {
 					FocusPluginLogger.log('Debug', 'enable list changed to ' + value);
 				}));
 
-		new Setting(containerEl)
-		.setName('Enable Status Indicator')
-		.setDesc('Show the status indicator in the status bar')
-		.addToggle(toggle => toggle
-			.setValue(this.plugin.settings.indicator)
-			.onChange(async (value: FocusPluginSettings["indicator"]) => {
-				this.plugin.settings.indicator = value;
-				await this.plugin.saveSettings();
-				FocusPluginLogger.log('Debug', 'indicator changed to ' + value);
-			}));
+			new Setting(containerEl)
+			.setName('Enable Status Indicator')
+			.setDesc('Show the status indicator in the status bar')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.indicator)
+				.onChange(async (value: FocusPluginSettings["indicator"]) => {
+					this.plugin.settings.indicator = value;
+					await this.plugin.saveSettings();
+					FocusPluginLogger.log('Debug', 'indicator changed to ' + value);
+				}));
 
 		new Setting(containerEl)
 			.setName('Focus Sensitivity')

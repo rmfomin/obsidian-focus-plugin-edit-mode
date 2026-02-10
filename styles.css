@@ -39,3 +39,14 @@ body.focus-plugin-enabled .focus-plugin-dim-animation {
         opacity: 1;
     }
 }
+
+/* Edit Mode (CodeMirror 6) Styles */
+body.focus-plugin-enabled .cm-line.focus-plugin-dimmed-line {
+    opacity: var(--focus-plugin-opacity, 0.1);
+    transition: opacity calc(var(--focus-plugin-speed, 0.5) * 1s) ease-in-out;
+}
+
+body.focus-plugin-enabled .cm-line.focus-plugin-focused-line {
+    opacity: 1;
+    transition: opacity calc(var(--focus-plugin-speed, 0.5) * 1s) ease-in-out;
+}
